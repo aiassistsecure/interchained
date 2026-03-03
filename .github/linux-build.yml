@@ -22,7 +22,6 @@ jobs:
 
     env:
       ARTIFACT_DIR: out
-      # Use tag name on tag builds, else sha
       PKG_NAME: interchained-glibc-portable-x86_64-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
       D_BIN: src/interchainedd
       CLI_BIN: src/interchained-cli
@@ -78,16 +77,6 @@ jobs:
           DB_BASE="$(ls -1 libdb-4.8.a     libdb.a     2>/dev/null | head -n1)"
           echo "BDB_LIBS_FILES=$BDB_PREFIX/lib/$DB_CXX $BDB_PREFIX/lib/$DB_BASE" >> "$GITHUB_ENV"
 
-      - name: Patch miniupnpc API call (5→7 args)
-        run: |
-          set -eux
-          f=src/net.cpp
-          [ -f "$f" ] || { echo "Skipping: $f not found"; exit 0; }
-          if grep -qE 'UPNP_GetValidIGD\(devlist,\s*&urls,\s*&data,\s*lanaddr,\s*sizeof\(lanaddr\)\)' "$f"; then
-            perl -0777 -pe 's/UPNP_GetValidIGD\(devlist,\s*&urls,\s*&data,\s*lanaddr,\s*sizeof\(lanaddr\)\)/UPNP_GetValidIGD(devlist, \&urls, \&data, lanaddr, sizeof(lanaddr), NULL, 0)/g' -i "$f"
-          fi
-          grep -n 'UPNP_GetValidIGD' "$f" || true
-
       - name: Configure & Build (glibc portable, C++14)
         env:
           BDB_PREFIX: ${{ github.workspace }}/db4
@@ -126,9 +115,7 @@ jobs:
         run: |
           set -eux
           file "$D_BIN" "$CLI_BIN"
-          # must NOT be musl
-          ! readelf -l "$D_BIN" | grep -qi 'ld-musl' 
-          # show dynamic deps for sanity
+          ! readelf -l "$D_BIN" | grep -qi 'ld-musl'
           ldd "$D_BIN" || true
           ldd "$CLI_BIN" || true
 
