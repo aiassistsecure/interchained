@@ -1,4 +1,4 @@
-its ok I am not pissed just want to be efficient I dont get pissed at things like this lets get it right this time here is my workflow that you sent me to build name: Linux Build (portable glibc) — wallet + miniupnpc + zmq
+name: Linux Build (portable glibc) — wallet + miniupnpc + zmq
 
 on:
   push:
