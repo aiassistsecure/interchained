@@ -139,7 +139,13 @@ jobs:
 
           # Collect runtime shared libraries (absolute paths from ldd)
           for bin in "$ARTIFACT_DIR/$(basename "$D_BIN")" "$ARTIFACT_DIR/$(basename "$CLI_BIN")"; do
-            ldd "$bin" | awk '/=> \//{print $3}' | while read -r so; do
+            ldd "$bin" | awk '
+              /=> \// {print $3}
+              /^\// {print $1}
+            ' | while read -r so; do
+              case "$so" in
+                */libc.so.*|*/ld-linux-*.so.*|*/ld-linux*.so.*) continue ;;
+              esac
               [ -f "$so" ] && cp -v "$so" "$ARTIFACT_DIR/lib/" || true
             done
           done
