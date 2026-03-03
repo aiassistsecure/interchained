@@ -1598,12 +1598,12 @@ static void ThreadMapPort()
     int r;
 
     // r = UPNP_GetValidIGD(devlist, &urls, &data, lanaddr, sizeof(lanaddr));
-    #if (defined(MINIUPNPC_API_VERSION) && MINIUPNPC_API_VERSION >= 14) || \
-        (defined(UPNP_VERSION) && UPNP_VERSION >= 18)
-        r = UPNP_GetValidIGD(devlist, &urls, &data, lanaddr, sizeof(lanaddr), NULL, 0);
-    #else
-        r = UPNP_GetValidIGD(devlist, &urls, &data, lanaddr, sizeof(lanaddr));
-    #endif
+#if (defined(MINIUPNPC_API_VERSION) && (MINIUPNPC_API_VERSION >= 18)) || \
+    (defined(UPNP_VERSION) && (UPNP_VERSION >= 18))
+    r = UPNP_GetValidIGD(devlist, &urls, &data, lanaddr, sizeof(lanaddr), NULL, 0);
+#else
+    r = UPNP_GetValidIGD(devlist, &urls, &data, lanaddr, sizeof(lanaddr));
+#endif
     if (r == 1)
     {
         if (fDiscover) {
