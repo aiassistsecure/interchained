@@ -1,4 +1,4 @@
-name: Linux Builds (wallet + miniupnpc)
+name: Linux Build (portable glibc) — wallet + miniupnpc + zmq
 
 on:
   push:
@@ -11,145 +11,101 @@ permissions:
 
 jobs:
   build:
-    name: ${{ matrix.flavor.name }} • ${{ matrix.arch }}
+    name: glibc-portable • x86_64
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [ x86_64 ]
-        flavor:
-          - name: musl-static
-            container: alpine:3.20
-          - name: glibc-portable
-            container: ubuntu:20.04
 
-    container: ${{ matrix.flavor.container }}
+    # Build inside Ubuntu 20.04 for maximum downstream compatibility
+    container: ubuntu:20.04
 
     env:
-      MAKEJOBS: "-j$(nproc)"
       ARTIFACT_DIR: out
-      PKG_NAME: interchained-${{ matrix.flavor.name }}-${{ matrix.arch }}-${{ github.sha }}
+      # Use tag name on tag builds, else sha
+      PKG_NAME: interchained-glibc-portable-x86_64-${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
       D_BIN: src/interchainedd
       CLI_BIN: src/interchained-cli
 
     steps:
-      - name: Checkout
+      - name: Install base deps (git + certs)
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            git ca-certificates
+          git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
+
+      - name: Checkout (with submodules)
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
 
-      # ===========================
-      # 1) Alpine MUSL — FULLY STATIC
-      #    Wallet + miniupnpc, ZMQ OFF
-      # ===========================
-      - name: Install deps (Alpine musl)
-        if: matrix.flavor.name == 'musl-static'
+      - name: Compute parallel jobs
         run: |
-          apk update
-          apk add --no-cache \
-            bash coreutils build-base autoconf automake libtool pkgconf \
-            boost-dev boost-static \
-            libevent-dev libevent-static \
-            openssl-dev openssl-libs-static \
-            git xz curl
+          J=$( (command -v nproc >/dev/null && nproc) || getconf _NPROCESSORS_ONLN || echo 1 )
+          echo "JOBS=$J" >> "$GITHUB_ENV"
 
-      - name: Build Berkeley DB 4.8 (musl, static)
-        if: matrix.flavor.name == 'musl-static'
-        env:
-          BDB_PREFIX: ${{ github.workspace }}/db4
-        run: |
-          set -eux
-          git clone --depth=1 https://github.com/bitcoin/berkeleydb.git bdb-src
-          cd bdb-src
-          git fetch --tags
-          git checkout db-4.8.30.NC
-          cd build_unix
-          ../dist/configure --prefix="$BDB_PREFIX" --enable-cxx --disable-shared --with-pic
-          make $MAKEJOBS
-          make install
-          ls -lah "$BDB_PREFIX"/lib
-
-      - name: Build miniupnpc (musl, static)
-        if: matrix.flavor.name == 'musl-static'
-        env:
-          LOCAL_PREFIX: /usr/local
-        run: |
-          set -eux
-          git clone --depth=1 https://github.com/miniupnp/miniupnp.git
-          cd miniupnp/miniupnpc
-          make -j"$(nproc)" SHARED=0
-          # Manually "install" static lib and headers so configure can find them
-          mkdir -p "$LOCAL_PREFIX/lib" "$LOCAL_PREFIX/include/miniupnpc"
-          cp -v libminiupnpc.a "$LOCAL_PREFIX/lib/"
-          cp -v *.h "$LOCAL_PREFIX/include/miniupnpc/"
-          ls -lah "$LOCAL_PREFIX/lib" "$LOCAL_PREFIX/include/miniupnpc"
-
-      - name: Configure & Build (Alpine musl static)
-        if: matrix.flavor.name == 'musl-static'
-        env:
-          BDB_PREFIX: ${{ github.workspace }}/db4
-          CPPFLAGS: "-I${{ github.workspace }}/db4/include -I/usr/local/include"
-          LDFLAGS: "-L${{ github.workspace }}/db4/lib -L/usr/local/lib -static"
-          CFLAGS: "-O2"
-          CXXFLAGS: "-O2"
-        run: |
-          ./autogen.sh
-          ./configure \
-            --enable-wallet \
-            --with-incompatible-bdb \
-            --without-gui \
-            --disable-bench \
-            --disable-tests \
-            --with-miniupnpc \
-            --disable-zmq
-          make $MAKEJOBS
-          test -f "$D_BIN" && test -f "$CLI_BIN"
-
-      - name: Verify static linkage (Alpine)
-        if: matrix.flavor.name == 'musl-static'
-        run: |
-          file "$D_BIN" "$CLI_BIN"
-          ldd "$D_BIN" || true
-          ldd "$CLI_BIN" || true
-
-      # ==================================
-      # 2) Ubuntu 20.04 — GLIBC PORTABLE
-      #    Wallet + miniupnpc + ZMQ
-      # ==================================
-      - name: Install deps (Ubuntu 20.04)
-        if: matrix.flavor.name == 'glibc-portable'
+      - name: Install build deps (Ubuntu 20.04)
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential autoconf automake libtool pkg-config \
             libevent-dev libboost-all-dev libminiupnpc-dev \
             libzmq3-dev libsqlite3-dev libssl-dev \
-            ca-certificates curl git xz-utils
+            file curl xz-utils perl patchelf
 
-      - name: Build Berkeley DB 4.8 locally (no mirrors)
-        if: matrix.flavor.name == 'glibc-portable'
+      - name: Build Berkeley DB 4.8 (portable) from observerdev/db-4.8.30
         env:
           BDB_PREFIX: ${{ github.workspace }}/db4
         run: |
           set -eux
-          git clone --depth=1 https://github.com/bitcoin/berkeleydb.git bdb-src
-          cd bdb-src
-          git fetch --tags
-          git checkout db-4.8.30.NC
-          cd build_unix
+          git clone --depth=1 https://github.com/observerdev/db-4.8.30.git bdb-src
+          sed -i 's/\b__atomic_compare_exchange\b/__db_atomic_compare_exchange/g' bdb-src/dbinc/atomic.h
+          cd bdb-src/build_unix
+          CFLAGS="-O2 -fPIC -Wno-builtin-declaration-mismatch -Wno-format-security" \
           ../dist/configure --prefix="$BDB_PREFIX" --enable-cxx --disable-shared --with-pic
-          make $MAKEJOBS
+          make -j"$JOBS"
           make install
-          ls -lah "$BDB_PREFIX"/lib
 
-      - name: Configure & Build (Ubuntu glibc portable)
-        if: matrix.flavor.name == 'glibc-portable'
+          cd "$BDB_PREFIX"/lib
+          for base in db db_cxx; do
+            [ -f "lib${base}.a" ] && [ ! -f "lib${base}-4.8.a" ] && ln -s "lib${base}.a" "lib${base}-4.8.a" || true
+            [ -f "lib${base}-4.8.a" ] && [ ! -f "lib${base}.a" ] && ln -s "lib${base}-4.8.a" "lib${base}.a" || true
+          done
+
+          DB_CXX="$(ls -1 libdb_cxx-4.8.a libdb_cxx.a 2>/dev/null | head -n1)"
+          DB_BASE="$(ls -1 libdb-4.8.a     libdb.a     2>/dev/null | head -n1)"
+          echo "BDB_LIBS_FILES=$BDB_PREFIX/lib/$DB_CXX $BDB_PREFIX/lib/$DB_BASE" >> "$GITHUB_ENV"
+
+      - name: Patch miniupnpc API call (5→7 args)
+        run: |
+          set -eux
+          f=src/net.cpp
+          [ -f "$f" ] || { echo "Skipping: $f not found"; exit 0; }
+          if grep -qE 'UPNP_GetValidIGD\(devlist,\s*&urls,\s*&data,\s*lanaddr,\s*sizeof\(lanaddr\)\)' "$f"; then
+            perl -0777 -pe 's/UPNP_GetValidIGD\(devlist,\s*&urls,\s*&data,\s*lanaddr,\s*sizeof\(lanaddr\)\)/UPNP_GetValidIGD(devlist, \&urls, \&data, lanaddr, sizeof(lanaddr), NULL, 0)/g' -i "$f"
+          fi
+          grep -n 'UPNP_GetValidIGD' "$f" || true
+
+      - name: Configure & Build (glibc portable, C++14)
         env:
           BDB_PREFIX: ${{ github.workspace }}/db4
+          BDB_CFLAGS: "-I${{ github.workspace }}/db4/include"
           CPPFLAGS: "-I${{ github.workspace }}/db4/include"
+          # Portable trick: ship with static libstdc++ / libgcc, leave glibc dynamic
           LDFLAGS: "-L${{ github.workspace }}/db4/lib -static-libstdc++ -static-libgcc"
+          CFLAGS: "-O2"
+          CXXFLAGS: "-O2 -std=c++14"
         run: |
+          set -eux
           ./autogen.sh
+          export CPATH="$BDB_PREFIX/include:${CPATH:-}"
+          [ -d "$BDB_PREFIX/include/db4" ] && export CPATH="$BDB_PREFIX/include/db4:$CPATH"
+
+          if [ -n "${BDB_LIBS_FILES:-}" ]; then
+            export BDB_LIBS="${BDB_LIBS_FILES} -pthread"
+          else
+            export BDB_LIBS="-L${BDB_PREFIX}/lib -ldb_cxx-4.8 -ldb-4.8 -pthread"
+          fi
+
           ./configure \
             --enable-wallet \
             --with-incompatible-bdb \
@@ -157,20 +113,22 @@ jobs:
             --disable-bench \
             --disable-tests \
             --with-zmq \
-            --with-miniupnpc
-          make $MAKEJOBS
+            --with-miniupnpc \
+          || { echo "=== config.log ==="; cat config.log || true; exit 1; }
+
+          make -j"$JOBS"
           test -f "$D_BIN" && test -f "$CLI_BIN"
 
-      - name: Show linkage (Ubuntu)
-        if: matrix.flavor.name == 'glibc-portable'
+      - name: Verify it will run on Ubuntu (no musl interpreter)
         run: |
+          set -eux
           file "$D_BIN" "$CLI_BIN"
+          # must NOT be musl
+          ! readelf -l "$D_BIN" | grep -qi 'ld-musl' 
+          # show dynamic deps for sanity
           ldd "$D_BIN" || true
           ldd "$CLI_BIN" || true
 
-      # -------------------
-      # Package artifacts
-      # -------------------
       - name: Strip & package
         run: |
           mkdir -p "$ARTIFACT_DIR"
