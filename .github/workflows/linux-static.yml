@@ -118,6 +118,12 @@ jobs:
           ! readelf -l "$D_BIN" | grep -qi 'ld-musl'
           ldd "$D_BIN" || true
           ldd "$CLI_BIN" || true
+      
+      - name: Show runtime deps (ldd)
+        run: |
+          set -eux
+          ldd "$D_BIN" || true
+          ldd "$CLI_BIN" || true
 
       - name: Strip & package
         run: |
